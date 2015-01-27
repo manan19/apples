@@ -1,0 +1,7 @@
+{
+  "name": "",
+  "dependencies": {
+    "underscore": "*",
+    "yahoo-finance": "*"
+  }
+}
