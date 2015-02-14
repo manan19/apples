@@ -2,6 +2,13 @@ yahooFinance = require('yahoo-finance')
 fs = require('fs')
 _ = require('underscore')
 
+DEBUG = false
+useCache = false
+
+console.debug = (str) ->
+  if DEBUG
+    console.log str
+
 toUSD = (number) ->
   number = number.toString()
   dollars = number.split('.')[0]
@@ -49,13 +56,13 @@ potentialReturns = (prices, minSellGap) ->
         sell i
       else buy i  if prices[i] < prices[i + 1] and not owned
     i++
-#    console.log prices[i] + transaction
-#
-#  console.log numOfTransactions
+    console.debug prices[i] + transaction
+
+  console.debug numOfTransactions
   returnRatio
 
 # This method trails the max value before initiating a sell
-intelligentTrailReturns = (prices, minSellGap, buyingTrailPercent, sellingTrailPercent) ->
+intelligentTrailReturns = (prices, minSellGap, buyingTrailPercent, sellingTrailPercent, lossesAllowed) ->
   transaction = undefined
   owned = undefined
   lastBuyPrice = undefined
@@ -76,17 +83,19 @@ intelligentTrailReturns = (prices, minSellGap, buyingTrailPercent, sellingTrailP
     return
 
   sell = (index) ->
-    return  if index <= nextSell
-    transaction = ' <- sell'
+    if index <= nextSell
+      console.debug 'wanted to sell, but could not because of unsettled funds'
+      return
+    transaction = 'sell'
     owned = false
     numOfTransactions++
     nextSell = index + minSellGap
     resetBuyingTrail()
     updateBuyingTrail prices[index]
     returnRatio *= prices[index] / lastBuyPrice
-#    console.log "Last trade was a #{if prices[index] / lastBuyPrice > 1 then 'profit' else 'loss'}"
-#    console.log "NET #{ if returnRatio > 1 then 'PROFIT' else 'LOSS'}"
-#    console.log "#{prices[index]} #{lastBuyPrice}";
+    console.debug "Last trade was a #{if prices[index] / lastBuyPrice > 1 then 'profit' else 'loss'}"
+    console.debug "NET #{ if returnRatio > 1 then 'PROFIT' else 'LOSS'}  #{returnRatio}"
+    console.debug "#{lastBuyPrice} #{prices[index]} ";
     return
 
   updateSellingTrail = (price) ->
@@ -99,7 +108,7 @@ intelligentTrailReturns = (prices, minSellGap, buyingTrailPercent, sellingTrailP
     return
 
   buy = (index) ->
-    transaction = ' <- buy'
+    transaction = 'buy'
     owned = true
     numOfTransactions++
     lastBuyPrice = prices[index]
@@ -108,31 +117,30 @@ intelligentTrailReturns = (prices, minSellGap, buyingTrailPercent, sellingTrailP
     return
 
 #  potentalReturns
-  i = 0
-
-  while i < prices.length
-    transaction = ''
+  for i in [0..prices.length-1]
+    transaction = if owned then 'hold' else ''
     if i is 0
       buy i
     else if i is prices.length - 1
       sell i
     else
       if prices[i] < sellingTrail and owned
-        sell i  if prices[i] > lastBuyPrice
-      else buy i  if prices[i] > buyingTrail and not owned
+        if prices[i] > lastBuyPrice or lossesAllowed
+          sell i
+      else if prices[i] > buyingTrail and not owned
+        buy i
     updateSellingTrail prices[i]
     updateBuyingTrail prices[i]
-    i++
 
-#    console.log prices[i] + transaction
-#    console.log " sT #{Math.round (sellingTrail * 100) / 100}"
-#    console.log " bT #{Math.round (buyingTrail * 100) / 100}"
-#
-#  console.log(numOfTransactions);
+    console.debug "#{prices[i]} <- #{transaction}"
+    console.debug " sT #{(Math.round sellingTrail * 100) / 100}"
+    console.debug " bT #{(Math.round buyingTrail * 100) / 100}"
+
+  console.debug(numOfTransactions);
   returnRatio
 
 analyze = (quotes, symbol) ->
-  investment = 1000
+  investment = 100
   adjCloses = []
 
   for i in [0..quotes.length-1]
@@ -143,7 +151,7 @@ analyze = (quotes, symbol) ->
   trailReturns = 0
 
   # Global params
-  sellGap = 0
+  sellGap = 3
   longTermCapitalGainsTaxRate = 15
   shortTermCapitalGainsTaxRate = 28
 
@@ -159,27 +167,27 @@ analyze = (quotes, symbol) ->
 
   console.log 'iTrailReturns'
   console.log "minGainToBeBetterThanLTCG #{minGainToBeBetterThanLTCG}"
-  console.log ' bTP%\t sTP%\t Returns'
+  console.log ' bTP%\t sTP%\t Returns\t Net\t Margin\t lossAllowed'
 
-  for sTP in [1..20]
-    for bTP in [1..20]
-      trailReturns = investment * intelligentTrailReturns(adjCloses, sellGap, bTP, sTP)
-      if trailReturns > vanillaReturns
-        bTPPercent = ('0'+bTP).slice(-2)
-        sTPPercent = ('0' + sTP).slice(-2)
-        iTrailReturns = toUSD Math.round trailReturns
-        iTrailNetGain = ((trailReturns / vanillaReturns - 1) * 100).toFixed(2)
-        iTrailMarginGain = Number (iTrailNetGain - minGainToBeBetterThanLTCG).toFixed(2)
+  for lossesAllowed in [true, false]
+    for sTP in [1..20]
+      for bTP in [1..20]
+        trailReturns = investment * intelligentTrailReturns adjCloses, sellGap, bTP, sTP, lossesAllowed
+        if trailReturns > vanillaReturns
+          bTPPercent = ('0'+bTP).slice(-2)
+          sTPPercent = ('0' + sTP).slice(-2)
+          iTrailReturns = toUSD Math.round trailReturns
+          iTrailNetGain = ((trailReturns / vanillaReturns - 1) * 100).toFixed(2)
+          iTrailMarginGain = Number (iTrailNetGain - minGainToBeBetterThanLTCG).toFixed(2)
 
-        if iTrailMarginGain > 0
-          console.log " #{bTPPercent}\t #{sTPPercent}\t #{iTrailReturns}\t #{iTrailNetGain}\t #{iTrailMarginGain}"
+          if iTrailMarginGain > 0
+            console.log " #{bTPPercent}\t #{sTPPercent}\t #{iTrailReturns}\t #{iTrailNetGain}\t #{iTrailMarginGain}\t #{lossesAllowed}"
 
 analyzeMultiple = (err, results) ->
   fs.writeFileSync './sample', JSON.stringify results
   _.each results, (quotes, symbol) ->
     analyze quotes, symbol
 
-useCache = false
 if useCache
   results = JSON.parse(fs.readFileSync('./sample'))
   analyzeMultiple null, results
@@ -194,10 +202,14 @@ else
 #      'msft'
 #      'goog'
 #      'fb'
-      'tsla'
+#      'bbry'
+#      'ostk'
+#      'xom'
+#      'lnkd'
+#      'tsla'
 #      'tm'
 #      'scty'
-#      'gpro'
+      'gpro'
 #      'z'
 #      'twtr'
     ]
